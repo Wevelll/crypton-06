@@ -28,12 +28,13 @@ describe("DAO contract", function () {
 
     describe("Deployment and utility functions", function () {
         it("Deploy contracts", async function () {
+            let numVotes = ethers.utils.parseEther("500");
             votingToken = await votingTokenFactory.deploy();
+            await votingToken.deployed();
             myDAO = await DAOfactory.deploy(
                 owner.address, votingToken.address, 
-                500, 3600 * 24 * 3
+                numVotes, 3600 * 24 * 3
             );
-            let numVotes = 500;
             await votingToken.mint(voter1.address, numVotes);
             await votingToken.mint(voter2.address, numVotes);
             await votingToken.mint(voter3.address, numVotes);
@@ -56,7 +57,9 @@ describe("DAO contract", function () {
 
        it("Debate time and quorum management", async function () {
            expect (
-               await myDAO.setQuorum(250)
+               await myDAO.setQuorum(
+                   ethers.utils.parseEther("250")
+               )
            ).to.satisfy;
            expect (
                myDAO.setQuorum(2)
@@ -80,60 +83,65 @@ describe("DAO contract", function () {
 
     describe("Core features", function () {
         it("Deposit", async function () {
-            await votingToken.connect(voter1).increaseAllowance(myDAO.address, 200);
-            await votingToken.connect(voter2).increaseAllowance(myDAO.address, 200);
-            await votingToken.connect(voter3).increaseAllowance(myDAO.address, 300);
+            let b0 = ethers.utils.parseEther("100");
+            let b1 = ethers.utils.parseEther("200");
+            let b2 = ethers.utils.parseEther("300");
+            await votingToken.connect(voter1).increaseAllowance(
+                myDAO.address, b1
+                );
+            await votingToken.connect(voter2).increaseAllowance(
+                myDAO.address, b1
+                );
+            await votingToken.connect(voter3).increaseAllowance(myDAO.address, b2);
             expect (
-                await myDAO.connect(voter1).deposit(100)
+                await myDAO.connect(voter1).deposit(b0)
             ).to.satisfy;
             expect (
-                await myDAO.connect(voter1).deposit(100)
+                await myDAO.connect(voter1).deposit(b0)
             ).to.satisfy;
 
             expect (
-                await myDAO.connect(voter2).deposit(200)
+                await myDAO.connect(voter2).deposit(b1)
             ).to.satisfy;
 
             expect (
-                await myDAO.connect(voter3).deposit(300)
+                await myDAO.connect(voter3).deposit(b2)
             ).to.satisfy;
         });
         it("Proposals creation", async function () {
             let abi = [
                 "function mint(address to, uint256 amount)"
             ];
-            let iface = new ethers.utils.Interface(abi);
-            let callData = iface.encodeFunctionData("mint", [user.address, 1337]);
-            let callData2 = iface.encodeFunctionData("mint", [ethers.constants.AddressZero, 0]);
+            let iface0 = new ethers.utils.Interface(abi);
+            let callData0 = iface0.encodeFunctionData("mint", [user.address, ethers.utils.parseEther("1337")]);
+            let abi1 = [
+                "function addDebateTime(uint256 id, uint256 value)"
+            ];
+            let iface1 = new ethers.utils.Interface(abi1);
+            let callData1 = iface1.encodeFunctionData("addDebateTime", [0, 3600*24*7]);
             expect (
                 await myDAO.connect(propAdmin).addProposal(
-                    callData, votingToken.address, "Mint 1337 tokens to user"
+                    callData0, votingToken.address, "Mint 1337 tokens to user"
                 )
-            ).to.emit(myDAO, "Proposal").withArgs(0, true);
+            ).to.emit(myDAO, "ProposalEvent").withArgs(0, true, false);
             expect (
                 myDAO.connect(user).addProposal(
-                    callData, votingToken.address, "Mint 1337 tokens to user"
+                    callData0, votingToken.address, "Mint 1337 tokens to user"
                 )
             ).to.be.reverted;
             expect (
                 await myDAO.connect(propAdmin).addProposal(
-                    callData2, ethers.constants.AddressZero, "Prop which calldata would be updated later"
+                    callData1, myDAO.address, "Add debate time for prop 0"
                 )
-            ).to.emit(myDAO, "Proposal").withArgs(1, true);
+            ).to.emit(myDAO, "ProposalEvent").withArgs(1, true, false);
         });
 
         it("Proposal modification", async function () {
+            let q = ethers.utils.parseEther("250");
             expect (
-                await myDAO.connect(propAdmin).setPropQuorum(0,250)
+                await myDAO.connect(propAdmin).setPropQuorum(0,q)
             ).to.satisfy;
-            let abi = [
-                "function addDebateTime(uint256 id, uint256 value)"
-            ];
-            let iface = new ethers.utils.Interface(abi);
-            let callData = iface.encodeFunctionData("addDebateTime", [0, 3600*24*7]);
-            expect (
-                await myDAO.connect(propAdmin).setCallData(1, myDAO.address, callData)
-            ).to.satisfy;
+
 
             expect (
                 myDAO.connect(propAdmin).setPropQuorum(0,2)
@@ -177,7 +185,7 @@ describe("DAO contract", function () {
             ).to.be.reverted;
             //also cannot withdraw until user has unfinished proposals
             await expect(
-                myDAO.connect(voter1).withdraw(200)
+                myDAO.connect(voter1).withdraw(ethers.utils.parseEther("200"))
             ).to.be.reverted;
 
             await network.provider.send("evm_increaseTime", [3600*24*3]);
@@ -185,11 +193,11 @@ describe("DAO contract", function () {
 
             expect (
                 await myDAO.connect(user).finishProposal(1)
-            ).to.emit(myDAO, "Proposal").withArgs(1, false);
+            ).to.emit(myDAO, "ProposalEvent").withArgs(1, false, true);
 
             //still cannot withdraw due to prop 0
             expect(
-                myDAO.connect(voter1).withdraw(200)
+                myDAO.connect(voter1).withdraw(ethers.utils.parseEther("200"))
             ).to.be.reverted;
 
             await network.provider.send("evm_increaseTime", [3600*24*7]);
@@ -197,17 +205,17 @@ describe("DAO contract", function () {
             
             expect (
                 await myDAO.connect(user).finishProposal(0)
-            ).to.emit(myDAO, "Proposal").withArgs(0, false);
+            ).to.emit(myDAO, "ProposalEvent").withArgs(0, false, true);
 
             expect(
-                myDAO.connect(voter1).withdraw(500)
+                myDAO.connect(voter1).withdraw(ethers.utils.parseEther("500"))
             ).to.be.reverted;
 
             expect(
-                await myDAO.connect(voter1).withdraw(200)
+                await myDAO.connect(voter1).withdraw(ethers.utils.parseEther("200"))
             ).to.satisfy;
             expect(
-                await myDAO.connect(voter3).withdraw(200)
+                await myDAO.connect(voter3).withdraw(ethers.utils.parseEther("200"))
             ).to.satisfy;
         });
     });

@@ -11,7 +11,6 @@ contract DAO is Ownable, AccessControl {
     Counters.Counter private propsID;
 
     bytes32 private constant PROP_ADMIN = keccak256("PROP_ADMIN");
-    bytes32 private constant VOTER = keccak256("VOTER");
 
     address public votingToken;
     uint256 public minQuorum;
@@ -19,18 +18,19 @@ contract DAO is Ownable, AccessControl {
 
     mapping(address => uint256) public balances;
     mapping(address => uint) public latestProp;
-    mapping(uint => proposal) public props;
+    mapping(uint => Proposal) public props;
 
-    struct proposal {
+    struct Proposal {
         address recepient;
         bool active;
         uint256 quorum;
         uint256 started;
         uint256 finished;
+        uint256 votedCount;
+        uint256 sVotes; //support votes
+        uint256 aVotes; //against votes
         string description;
         bytes callData;
-        int256 votesSum;
-        uint256 votedCount;
         mapping(address => bool) voted;
     }
 
@@ -40,17 +40,23 @@ contract DAO is Ownable, AccessControl {
         uint256 _minimumQuorum,
         uint256 _debatingPeriodDuration
     ) {
-        _grantRole(PROP_ADMIN, address(this));
+        _grantRole(PROP_ADMIN, address(this)); //calling addDebateTime via proposal fails without it somewhy
         _grantRole(PROP_ADMIN, chairPerson);
         votingToken = _voteToken;
         minQuorum = _minimumQuorum;
         debateDuration = _debatingPeriodDuration;
     }
 
-    event Proposal(uint indexed id, bool active);
+    event ProposalEvent(uint indexed id, bool active, bool functionCalled); //result true if supported > 50%
     event Vote(uint indexed id, address indexed voter, bool supportAgainst);
+
     modifier propActive(uint256 id) {
         require(props[id].active, "Prop finished!");
+        _;
+    }
+
+    modifier hasBalance() {
+        require(balances[msg.sender] > 0, "User has zero balance!");
         _;
     }
 
@@ -89,33 +95,18 @@ contract DAO is Ownable, AccessControl {
         props[id].finished += value;
     }
 
-    function setCallData(
-        uint256 id,
-        address recepient,
-        bytes memory callData
-    ) public propActive(id) onlyRole(PROP_ADMIN) {
-        props[id].recepient = recepient;
-        props[id].callData = callData;
-    }
-
     function deposit(uint256 amount) external {
         ERC20(votingToken).transferFrom(msg.sender, address(this), amount);
-        if (balances[msg.sender] == 0) {
-            _grantRole(VOTER, msg.sender);
-        }
         balances[msg.sender] += amount;
     }
 
-    function withdraw(uint256 amount) external onlyRole(VOTER) {
+    function withdraw(uint256 amount) external hasBalance {
         require(
             props[latestProp[msg.sender]].active == false,
             "Finish proposal first!"
         );
         require(balances[msg.sender] >= amount, "Amount exceeds balance!");
         balances[msg.sender] -= amount;
-        if (balances[msg.sender] == 0) {
-            _revokeRole(VOTER, msg.sender);
-        }
         ERC20(votingToken).transfer(msg.sender, amount);
     }
 
@@ -125,7 +116,7 @@ contract DAO is Ownable, AccessControl {
         string memory description
     ) external onlyRole(PROP_ADMIN) returns (uint256 id) {
         id = propsID.current();
-        proposal storage newProp = props[id];
+        Proposal storage newProp = props[id];
         newProp.recepient = _recepient;
         newProp.active = true;
         newProp.quorum = minQuorum;
@@ -135,21 +126,20 @@ contract DAO is Ownable, AccessControl {
         newProp.callData = callData;
         propsID.increment();
 
-        emit Proposal(id, true);
+        emit ProposalEvent(id, true, false);
     }
 
     function vote(uint id, bool supportAgainst)
         external
         propActive(id)
-        onlyRole(VOTER)
+        hasBalance
     {
-        proposal storage prop = props[id];
+        Proposal storage prop = props[id];
         require(prop.voted[msg.sender] == false, "Already voted!");
         if (supportAgainst) {
-            //suppose we won't have issues with int/uint conversion
-            prop.votesSum += int256(balances[msg.sender]);
+            prop.sVotes += balances[msg.sender];
         } else {
-            prop.votesSum -= int256(balances[msg.sender]);
+            prop.aVotes += balances[msg.sender];
         }
         latestProp[msg.sender] = id;
         prop.voted[msg.sender] = true;
@@ -159,17 +149,18 @@ contract DAO is Ownable, AccessControl {
     }
 
     function finishProposal(uint id) external propActive(id) {
-        proposal storage prop = props[id];
+        Proposal storage prop = props[id];
         require(block.timestamp > prop.finished, "Cannot finish yet!");
         prop.active = false;
         address recepient = prop.recepient;
         if (prop.votedCount >= prop.quorum) {
-            if (prop.votesSum > 0) {
+            if (prop.sVotes > prop.aVotes) {
                 (bool success, ) = recepient.call(prop.callData);
                 require(success, "Function call failed!");
+        		emit ProposalEvent(id, false, true);
             }
-        }
-
-        emit Proposal(id, false);
+        } else {
+        	emit ProposalEvent(id, false, false);
+		}
     }
 }
